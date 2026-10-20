@@ -1,0 +1,43 @@
+{
+  "name": "@accsyn/mcp-server",
+  "version": "0.1.0",
+  "description": "Local stdio MCP server for the accsyn workspace API",
+  "license": "Apache-2.0",
+  "type": "module",
+  "author": "Henrik Norin <support@accsyn.com>",
+  "homepage": "https://accsyn.com",
+  "keywords": [
+    "accsyn",
+    "mcp",
+    "file-transfer"
+  ],
+  "bin": {
+    "accsyn-mcp-server": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "prepublishOnly": "npm test && npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.2",
+    "accsyn": "^3.4.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.8"
+  },
+  "allowScripts": {
+    "esbuild": true,
+    "fsevents": true
+  }
+}
