@@ -2,14 +2,50 @@
 
 Local [MCP](https://modelcontextprotocol.io) server for the accsyn workspace API. It speaks stdio, so an agent runs it on your machine. It is not a hosted service.
 
-This first version lists the transfers owned by a user. Deliveries, queues, and compute jobs are left out. Each listing is available two ways, as a tool (the argument `user` is an email address) and as a resource. Clients such as ChatGPT use tools.
+This first version lists transfers. Deliveries, queues, and compute jobs are left out.
 
-| Listing | Tool | Resource | URI |
-| --- | --- | --- | --- |
-| Active transfers | `transfer_list` | `transfer.list` | `accsyn://transfer/list/john@user.com` |
-| Finished transfers (status `done` or `aborted`), most recent first | `transfer_list_finished` | `transfer.list_finished` | `accsyn://transfer/finished/john@user.com` |
+## Listing transfers
 
-The accsyn backend caps how many finished transfers it returns, so very old ones may be missing.
+There is one tool, `transfer_list`, and every filter is an optional argument. Filters that are given must all match. Clients such as ChatGPT and Claude use tools, so the tool is the main interface.
+
+| Argument | Meaning |
+| --- | --- |
+| `user` | Email of the user who created the transfers, for example `john@user.com`. Left out, it covers every user the account can see. |
+| `state` | `active` (default, not finished yet), `finished` (status `done` or `aborted`), or `all`. |
+| `status` | One status or a list, for example `["running","paused"]`. Known statuses: `pending`, `waiting`, `running`, `paused`, `failed`, `aborted`, `done`. |
+| `source` | The sending party. Use it for "downloaded from X" and "uploaded by X". |
+| `destination` | The receiving party. Use it for "uploaded to X" and "downloaded by X". |
+| `created_after`, `created_before` | ISO date or date time, for example `2026-10-01` or `2026-10-01T12:00:00Z`. A date alone means 00:00 UTC. |
+| `finished_after`, `finished_before` | The same, for the time the transfer finished. |
+| `limit` | Number of transfers to return. Default 50, at most 200. |
+
+The result has `transfers`, most recent first (by finish time for `finished`, otherwise by creation time), plus `count`, `total` (matches before `limit`), `truncated`, and the `filters` that were applied.
+
+Examples of what to ask:
+
+- `List all active transfers for john@user.com`
+- `Which transfers were aborted since 12 October?`
+- `Show john@user.com's finished transfers from last week`
+- `Find all transfers uploaded to site london by tom@berlinvfx.com` (`source: "user:tom@berlinvfx.com"`, `destination: "site:london"`)
+
+A party is `user:<email>` for a remote user, `site:<name>` for a site, or `workspace` for the workspace itself (the main site, HQ). The text after the colon only has to be contained in the party name, ignoring case, so `site:lond` finds `london`. `user:`, `site:` or `workspace` alone matches any party of that type, and text without a type matches a party of any type. Only the name is compared: the `[role]` and `(id)` parts of the human readable form are ignored.
+
+The server reads both the type and the name from `source_hr` and `destination_hr`, which start with the party type, for example `user:lisa@example.com[standard](id)` or `site:london`.
+
+`user` and `status` are matched by the accsyn backend. The parties and the dates are compared by the MCP server after the backend answers, because the backend query only matches whole values and compares text. The backend caps how many finished transfers it returns, so with only a party or date filter the oldest finished ones may be missing. Narrow with `user` or `status` first to get everything.
+
+### Resources
+
+Two shortcuts are also offered as resources, for clients that read resources. A resource URI cannot carry optional filters, so these only take a user. Use the tool for anything else.
+
+| Resource | URI |
+| --- | --- |
+| `transfer.list` (active) | `accsyn://transfer/list/john@user.com` |
+| `transfer.list_finished` | `accsyn://transfer/finished/john@user.com` |
+
+### Adding a filter
+
+Add a field to `TransferFilters` in `src/transfers.ts` and a matching optional argument to the tool in `src/index.ts`. A new tool or resource is not needed.
 
 ## Configure
 
@@ -70,7 +106,7 @@ Use the absolute path to `dist/index.js`, because ChatGPT does not start the ser
 
 Once the package is on npm, the command can be `npx -y @accsyn/mcp-server` with the same variables.
 
-Save it, restart ChatGPT, start a new chat, and ask: `List all active transfers for john@user.com`. ChatGPT calls the `transfer_list` tool, which reads the active transfers for that user from the backend on port 8181. Ask `List finished transfers for john@user.com` for the `transfer_list_finished` tool.
+Save it, restart ChatGPT, start a new chat, and ask: `List all active transfers for john@user.com`. ChatGPT calls the `transfer_list` tool, which reads the active transfers for that user from the backend on port 8181. Ask `List finished transfers for john@user.com` to make it use `state: "finished"`.
 
 After you rebuild with `npm run build`, restart ChatGPT so it starts the new `dist/index.js`.
 
