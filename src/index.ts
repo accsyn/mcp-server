@@ -6,12 +6,24 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as z from "zod/v4";
 import { credentialsFromEnv } from "./credentials.js";
 import {
+  DEFAULT_LOG_LIMIT,
+  listLogs,
+  LOG_SCOPES,
+  MAX_LOG_LIMIT,
+} from "./logs.js";
+import {
+  DEFAULT_PROCESS_LIMIT,
+  listProcessLog,
+  MAX_PROCESS_LIMIT,
+  PROCESS_KINDS,
+} from "./processlogs.js";
+import type { AccsynSession } from "./session.js";
+import {
   DEFAULT_LIMIT,
   listTransfers,
   MAX_LIMIT,
   TRANSFER_STATUSES,
   type TransferList,
-  type TransferSession,
   type TransferState,
 } from "./transfers.js";
 
@@ -50,7 +62,7 @@ const SHORTCUTS: TransferShortcut[] = [
   },
 ];
 
-export function createServer(session: TransferSession): McpServer {
+export function createServer(session: AccsynSession): McpServer {
   const server = new McpServer({ name: "accsyn", version: "0.1.0" });
 
   // Clients such as ChatGPT call tools/list when they start, so a tool must exist. All filtering goes through
@@ -111,6 +123,126 @@ export function createServer(session: TransferSession): McpServer {
           limit: args.limit,
         });
         return { content: [{ type: "text", text: toJson(list) }] };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "log_list",
+    {
+      title: "Read logs",
+      description:
+        "Read accsyn logs, newest rows first, one page at a time. " +
+        'Without job or job_id this reads a general log chosen by scope: "workspace" is the log of the whole workspace, ' +
+        '"job" is the general log of all jobs, and "user" is the general log of user events. ' +
+        "With job (a job name) or job_id this reads the log of that one job. A job can be a transfer, a delivery or a compute job. " +
+        "Examples: \"the logs for job myupload\" is { job: \"myupload\" }; " +
+        '"errors in the workspace log" is { search: "error" }. ' +
+        "The result has total, pages and has_more. When has_more is true, call again with page set to next_page to read older rows.",
+      inputSchema: {
+        scope: z
+          .enum(LOG_SCOPES)
+          .optional()
+          .describe('The general log to read: "workspace" (default), "job" or "user". Not used when job or job_id is given.'),
+        job: z
+          .string()
+          .optional()
+          .describe(
+            "Name of the job to read the log of, for example myupload. The name must match exactly, ignoring case. If several jobs have the name, the most recent is read and a warning lists the others.",
+          ),
+        job_id: z
+          .string()
+          .optional()
+          .describe("ID of the job to read the log of. Use it instead of job when the ID is known, for example from transfer_list or from a warning about duplicate names."),
+        search: z.string().optional().describe("Only rows that contain this text, ignoring case."),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_LOG_LIMIT)
+          .optional()
+          .describe(`Rows per page. Default ${DEFAULT_LOG_LIMIT}, at most ${MAX_LOG_LIMIT}.`),
+        page: z.number().int().min(1).optional().describe("Page number from 1. Page 1 holds the newest rows."),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) => {
+      try {
+        const list = await listLogs(session, {
+          scope: args.scope,
+          job: args.job,
+          jobId: args.job_id,
+          search: args.search,
+          limit: args.limit,
+          page: args.page,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
+      } catch (error) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
+        };
+      }
+    },
+  );
+
+  server.registerTool(
+    "process_log",
+    {
+      title: "Read process log",
+      description:
+        "Read the process log (console output) of a job task, for example the detailed transfer log of a transfer. " +
+        "The job is given by job (its name) or job_id. A job can be a transfer, a delivery or a compute job. " +
+        'By default the master log is read, which is the log of the remote transfer client or the render server. Set process to "slave" for the ' +
+        'slave log (the file server party, only available to operators and for transfer jobs), or to "both" to read both, for example to compare them. ' +
+        'Set task to the URI of the task. Transfer tasks are numbered from 0, so "task 0" and "the first task" are task "0", and "task 3" is "3". ' +
+        "Compute jobs have task URIs that are any text, which is passed on as it is. Without task, the first task that has been processed is read, and the result says which. " +
+        "A wrong task is answered with the tasks of the job. " +
+        "Output is returned one page of lines at a time, starting with the end of the log, so page 1 holds the newest lines. " +
+        "The result has total_lines, pages and has_more. When has_more is true, call again with page set to next_page to read earlier lines. " +
+        "Use search to read only lines that contain some text, for example error.",
+      inputSchema: {
+        job: z.string().optional().describe("Name of the job, for example myupload. Must match exactly, ignoring case. If several jobs have the name, the most recent is read and a warning lists the others."),
+        job_id: z.string().optional().describe("ID of the job. Use it instead of job when the ID is known, for example from transfer_list."),
+        task: z
+          .union([z.string(), z.number().int()])
+          .optional()
+          .describe('URI of the task. For transfers a number from 0, such as "0" for the first task. For compute jobs any text. Left out, the first processed task is read.'),
+        try_num: z.number().int().min(0).optional().describe("Which try (attempt) to read, counted from 0. Default is the latest. The result has try_count."),
+        process: z
+          .enum(PROCESS_KINDS)
+          .optional()
+          .describe('"master" (default), "slave" or "both". The slave log can only be read by operators, for transfer jobs.'),
+        search: z.string().optional().describe("Only lines that contain this text, ignoring case. Each line then starts with its line number."),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_PROCESS_LIMIT)
+          .optional()
+          .describe(`Lines per page. Default ${DEFAULT_PROCESS_LIMIT}, at most ${MAX_PROCESS_LIMIT}.`),
+        page: z.number().int().min(1).optional().describe("Page number from 1. Page 1 holds the end of the log, the newest lines."),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) => {
+      try {
+        const list = await listProcessLog(session, {
+          job: args.job,
+          jobId: args.job_id,
+          task: args.task,
+          tryNum: args.try_num,
+          process: args.process,
+          search: args.search,
+          limit: args.limit,
+          page: args.page,
+        });
+        return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] };
       } catch (error) {
         return {
           isError: true,

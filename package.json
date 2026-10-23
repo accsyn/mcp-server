@@ -28,7 +28,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.2",
-    "accsyn": "^3.4.0",
+    "accsyn": "^3.6.8",
     "zod": "^4.0.0"
   },
   "devDependencies": {

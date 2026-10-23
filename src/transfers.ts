@@ -10,6 +10,7 @@ export const DEFAULT_LIMIT = 50;
 export const MAX_LIMIT = 200;
 
 const ATTRIBUTES = [
+  "id",
   "code",
   "status",
   "type",
@@ -33,6 +34,8 @@ export interface TransferRecord {
 
 export interface FindTransfersOptions {
   attributes?: string[];
+  /** The parent entity, for example the job ID when finding the tasks of a job. */
+  entityId?: string;
   /** Search finished (done and aborted) jobs instead of live jobs. */
   finished?: boolean;
 }

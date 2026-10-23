@@ -2,7 +2,7 @@
 
 Local [MCP](https://modelcontextprotocol.io) server for the accsyn workspace API. It speaks stdio, so an agent runs it on your machine. It is not a hosted service.
 
-This first version lists transfers. Deliveries, queues, and compute jobs are left out.
+This first version lists transfers and reads logs and process logs. Deliveries, queues, and compute jobs are left out of the transfer list, but their logs can be read.
 
 ## Listing transfers
 
@@ -46,6 +46,67 @@ Two shortcuts are also offered as resources, for clients that read resources. A 
 ### Adding a filter
 
 Add a field to `TransferFilters` in `src/transfers.ts` and a matching optional argument to the tool in `src/index.ts`. A new tool or resource is not needed.
+
+## Reading logs
+
+The tool `log_list` reads accsyn logs, newest first, one page at a time so a long log does not flood the agent. Every argument is optional.
+
+| Argument | Meaning |
+| --- | --- |
+| `scope` | The general log to read: `workspace` (default, the whole workspace), `job` (the general log of all jobs) or `user` (user events). Not used when `job` or `job_id` is given. |
+| `job` | Name of a job, to read the log of that one job. A job can be a transfer, a delivery or a compute job. |
+| `job_id` | ID of a job, used instead of `job` when the ID is known. The transfer list returns the `id` of each transfer. |
+| `search` | Only rows that contain this text, ignoring case. |
+| `limit` | Rows per page. Default 50, at most 200. |
+| `page` | Page number from 1. Page 1 holds the newest rows. |
+
+Examples of what to ask:
+
+- `Show the logs for job myupload`
+- `Any errors in the workspace log?` (`search: "error"`)
+- `What happened to the transfer I started a minute ago?` (the agent lists transfers, then reads the log by the transfer's `id`)
+
+The result has `entries` (newest first, each with its `index` in the whole log, counted from 1 for the oldest row), `total`, `pages`, `has_more` and `next_page`. When `has_more` is true the agent asks for `page: next_page` to read older rows. `total` counts the rows that matched `search`. Log texts are cut at 1000 characters.
+
+A job is found by exact name, ignoring case, among running and finished jobs. If several jobs have the name, the log of the most recent one is returned together with a `warning` that lists the others, and the agent can ask again with `job_id`. A name that matches no job is an error.
+
+### How paging works
+
+The backend sorts a log oldest first, and its page windows only work for the last page: a window that starts after row 1 comes back empty, and the first page is one row short. The `page` and `limit` that the Python and JavaScript `logs()` accept are not read by the backend at all. It reads `start` and `size`.
+
+So the server asks for the newest `page × limit` rows (`start: -1` and `size`), and cuts the requested page out of them with each row's `index`. Reading page 3 of 50 rows asks the backend for 150 rows. At most 5000 rows deep can be read in one call. Use `search` to narrow a larger log.
+
+This needs `accsyn` 3.6.8 or later, where `logs()` has `paginationStart` and `paginationSize`. With an older one the option is ignored, the backend returns the whole log, and the answer is the same but slower.
+
+## Reading process logs
+
+The tool `process_log` reads the process log, the console output, of a job task. For a transfer this is the detailed transfer log. A job can be a transfer, a delivery or a compute job. Give the job as `job` (its name) or `job_id`. Every other argument is optional.
+
+| Argument | Meaning |
+| --- | --- |
+| `job` | Name of the job. Found by exact name, ignoring case. If several jobs have the name, the most recent is read, and a `warning` lists the others. |
+| `job_id` | ID of the job. The transfer list returns the `id` of each transfer. |
+| `process` | `master` (default), `slave` or `both`. |
+| `task` | URI of the task. Without it, the first task that has been processed is read, and the result says which. |
+| `try_num` | Which try (attempt) to read, counted from 0. Default is the latest. |
+| `search` | Only lines that contain this text, ignoring case. Each line then starts with its line number. |
+| `limit` | Lines per page. Default 200, at most 1000. |
+| `page` | Page number from 1. Page 1 holds the end of the log. |
+
+The master log is the log of the remote transfer client or the render server. The slave log is the log of the file server party. Only operators can read it, and only for transfer jobs. With `process: "both"` both logs are returned side by side, each paged on its own, so they can be compared. If the slave log is not returned, the result has a `warning` that says so.
+
+Transfer tasks are numbered from 0, so "task 0" and "the first task" are `task: "0"`. Compute jobs can have any text as task URI, which is passed on as it is. If the task is not one of the job's, the error lists the tasks of the job, found with `find("Task", entityId=<job id>)`.
+
+Examples of what to ask:
+
+- `Show the process log for job myupload`
+- `Fetch the process log for task 0 of job myupload`
+- `Compare the master and slave logs of job myupload`
+- `Any errors in the process log of job myupload?` (`search: "error"`)
+
+The result has `task`, `try` and `try_count`, and `process_history` when the task has had earlier tries. For each log (`master`, `slave`) it has `text`, `total_lines`, `pages`, `has_more` and `next_page`. The `text` holds the lines of the page in the order of the log, and `first_line` is the number of the first one. The newest lines come first, so page 1 is the end of the log, and `next_page` reads the lines before it. Lines are cut at 1000 characters.
+
+accsyn returns the whole log on every call, so paging limits what the agent receives, not what is transferred. This needs `accsyn` 3.6.8 or later, which has `processLogs()`.
 
 ## Configure
 

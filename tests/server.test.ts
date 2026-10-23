@@ -2,12 +2,25 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import { createServer } from "../src/index";
-import { TRANSFER_TYPE, type TransferList, type TransferRecord, type TransferSession } from "../src/transfers";
+import type { AccsynSession } from "../src/session";
+import { TRANSFER_TYPE, type TransferList, type TransferRecord } from "../src/transfers";
 
 /** Records every query. Live searches return `live`, finished searches return `finished`. */
-function fakeSession(live: TransferRecord[], finished: TransferRecord[]): TransferSession & { queries: string[] } {
-  const fake: TransferSession & { queries: string[] } = {
+function fakeSession(live: TransferRecord[], finished: TransferRecord[]): AccsynSession & { queries: string[] } {
+  const fake: AccsynSession & { queries: string[] } = {
     queries: [],
+    async processLogs() {
+      return { uri: "0", try: 0, try_count: 1, text_master: "one\ntwo\nthree\n", text_slave: "slave one\n" };
+    },
+    async logs() {
+      return {
+        result: [
+          { index: 1, text: "first", date: "2026-10-01T10:00:00" },
+          { index: 2, text: "second", date: "2026-10-01T10:00:01" },
+        ],
+        pagination: { start: 1, end: 2, total: 2 },
+      };
+    },
     async find(query, options) {
       fake.queries.push(query);
       return options?.finished ? finished : live;
@@ -50,11 +63,11 @@ describe("MCP server startup", () => {
 });
 
 describe("transfer_list tool", () => {
-  it("is the only tool and takes every filter as an optional argument", async () => {
+  it("takes every filter as an optional argument", async () => {
     const { client } = await connect();
     const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name)).toEqual(["transfer_list"]);
-    const schema = tools[0].inputSchema as { properties: Record<string, unknown>; required?: string[] };
+    expect(tools.map((tool) => tool.name).sort()).toEqual(["log_list", "process_log", "transfer_list"]);
+    const schema = tools.find((tool) => tool.name === "transfer_list")!.inputSchema as { properties: Record<string, unknown>; required?: string[] };
     expect(Object.keys(schema.properties).sort()).toEqual(
       [
         "created_after",
@@ -142,5 +155,79 @@ describe("transfer resources", () => {
     const { client } = await connect();
     const { resourceTemplates } = await client.listResourceTemplates();
     expect(resourceTemplates.map((template) => template.name).sort()).toEqual(["transfer.list", "transfer.list_finished"]);
+  });
+});
+
+describe("log_list tool", () => {
+  it("takes every argument as optional", async () => {
+    const { client } = await connect();
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool) => tool.name === "log_list")!.inputSchema as {
+      properties: Record<string, unknown>;
+      required?: string[];
+    };
+    expect(Object.keys(schema.properties).sort()).toEqual(["job", "job_id", "limit", "page", "scope", "search"]);
+    expect(schema.required ?? []).toEqual([]);
+  });
+
+  it("reads a log, newest first", async () => {
+    const { client } = await connect();
+    const result = await client.callTool({ name: "log_list", arguments: { scope: "user" } });
+    expect(result.isError).toBeFalsy();
+    const content = result.content as Array<{ type: string; text: string }>;
+    const list = JSON.parse(content[0].text) as { scope: string; total: number; entries: Array<{ text: string }> };
+    expect(list).toMatchObject({ scope: "user", total: 2 });
+    expect(list.entries.map((entry) => entry.text)).toEqual(["second", "first"]);
+  });
+
+  it("reports an invalid argument as a tool error", async () => {
+    const { client } = await connect();
+    const result = await client.callTool({ name: "log_list", arguments: { job_id: "nope" } });
+    expect(result.isError).toBe(true);
+  });
+});
+
+describe("process_log tool", () => {
+  const jobId = "69a6ac82f257470b44905a26";
+  const call = async (args: Record<string, unknown>) => {
+    const { client } = await connect();
+    const result = await client.callTool({ name: "process_log", arguments: args });
+    const content = result.content as Array<{ type: string; text: string }>;
+    return { result, text: content[0].text };
+  };
+
+  it("takes every argument as optional", async () => {
+    const { client } = await connect();
+    const { tools } = await client.listTools();
+    const schema = tools.find((tool) => tool.name === "process_log")!.inputSchema as {
+      properties: Record<string, unknown>;
+      required?: string[];
+    };
+    expect(Object.keys(schema.properties).sort()).toEqual(
+      ["job", "job_id", "limit", "page", "process", "search", "task", "try_num"],
+    );
+    expect(schema.required ?? []).toEqual([]);
+  });
+
+  it("reads the master log by default", async () => {
+    const { result, text } = await call({ job_id: jobId });
+    expect(result.isError).toBeFalsy();
+    const list = JSON.parse(text) as { task: string; master: { text: string }; slave?: unknown };
+    expect(list.task).toBe("0");
+    expect(list.master.text).toBe("one\ntwo\nthree");
+    expect(list.slave).toBeUndefined();
+  });
+
+  it("reads both logs and accepts a task number", async () => {
+    const { text } = await call({ job_id: jobId, process: "both", task: 0 });
+    const list = JSON.parse(text) as { master: { text: string }; slave: { text: string } };
+    expect(list.master.text).toBe("one\ntwo\nthree");
+    expect(list.slave.text).toBe("slave one");
+  });
+
+  it("reports a missing job as a tool error", async () => {
+    const { result, text } = await call({});
+    expect(result.isError).toBe(true);
+    expect(text).toMatch(/job_id/);
   });
 });
